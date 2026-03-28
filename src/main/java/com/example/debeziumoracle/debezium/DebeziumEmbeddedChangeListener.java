@@ -3,7 +3,7 @@ package com.example.debeziumoracle.debezium;
 import com.example.debeziumoracle.config.DebeziumCaptureProperties;
 import com.example.debeziumoracle.model.ChangeSource;
 import com.example.debeziumoracle.model.RowChange;
-import com.example.debeziumoracle.service.RetryableChangeProcessor;
+import com.example.debeziumoracle.service.AsyncEventProcessor;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,7 +32,7 @@ public class DebeziumEmbeddedChangeListener {
     private static final Logger log = LoggerFactory.getLogger(DebeziumEmbeddedChangeListener.class);
 
     private final DebeziumCaptureProperties properties;
-    private final RetryableChangeProcessor processor;
+    private final AsyncEventProcessor asyncProcessor;
     private final ObjectMapper objectMapper;
 
     private DebeziumEngine<ChangeEvent<String, String>> engine;
@@ -40,11 +40,11 @@ public class DebeziumEmbeddedChangeListener {
 
     public DebeziumEmbeddedChangeListener(
             DebeziumCaptureProperties properties,
-            RetryableChangeProcessor processor,
+            AsyncEventProcessor asyncProcessor,
             ObjectMapper objectMapper
     ) {
         this.properties = properties;
-        this.processor = processor;
+        this.asyncProcessor = asyncProcessor;
         this.objectMapper = objectMapper;
     }
 
@@ -108,7 +108,7 @@ public class DebeziumEmbeddedChangeListener {
                     after,
                     Instant.now()
             );
-            processor.processWithRetry(rowChange);
+            asyncProcessor.submitEvent(rowChange);
         } catch (Exception ex) {
             log.error("Failed to process Debezium event", ex);
         }
