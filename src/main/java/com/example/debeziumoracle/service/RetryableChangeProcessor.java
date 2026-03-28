@@ -26,7 +26,13 @@ public class RetryableChangeProcessor {
         this.properties = properties;
     }
 
-    public void processWithRetry(RowChange rowChange) {
+    /**
+     * Attempts to process the row change with retries and exponential backoff.
+     *
+     * @return {@code true} if processing succeeded, {@code false} if all retries
+     *         were exhausted and the event was sent to the DLQ.
+     */
+    public boolean processWithRetry(RowChange rowChange) {
         int attempt = 0;
         long backoff = properties.getInitialBackoffMs();
         Exception lastException = null;
@@ -40,7 +46,7 @@ public class RetryableChangeProcessor {
                             rowChange.operation());
                 }
                 delegate.process(rowChange);
-                return;
+                return true;
             } catch (Exception ex) {
                 lastException = ex;
                 attempt++;
@@ -68,9 +74,15 @@ public class RetryableChangeProcessor {
                 properties.getMaxRetries(), rowChange.schemaName(),
                 rowChange.tableName());
         dlqService.enqueue(FailedEvent.of(rowChange, lastException, properties.getMaxRetries()));
+        return false;
     }
 
-    public void replayFromDlq(String eventId) {
+    /**
+     * Replays a single event from the DLQ. Removes it only if processing succeeds.
+     *
+     * @return {@code true} if replay succeeded, {@code false} if it failed again.
+     */
+    public boolean replayFromDlq(String eventId) {
         FailedEvent failedEvent = dlqService.getById(eventId)
                 .orElseThrow(() -> new IllegalArgumentException("DLQ event not found: " + eventId));
 
@@ -78,21 +90,24 @@ public class RetryableChangeProcessor {
                 eventId, failedEvent.rowChange().schemaName(),
                 failedEvent.rowChange().tableName());
 
-        processWithRetry(failedEvent.rowChange());
-        dlqService.remove(eventId);
+        boolean success = processWithRetry(failedEvent.rowChange());
+        if (success) {
+            dlqService.remove(eventId);
+        }
+        return success;
     }
 
     public int replayAll() {
         var events = dlqService.getAll();
         int replayed = 0;
         for (FailedEvent event : events) {
-            try {
-                log.info("Replaying DLQ event id={}", event.id());
-                processWithRetry(event.rowChange());
+            log.info("Replaying DLQ event id={}", event.id());
+            boolean success = processWithRetry(event.rowChange());
+            if (success) {
                 dlqService.remove(event.id());
                 replayed++;
-            } catch (Exception ex) {
-                log.error("Replay failed for event id={}: {}", event.id(), ex.getMessage());
+            } else {
+                log.warn("Replay failed again for event id={}, keeping in DLQ", event.id());
             }
         }
         return replayed;
