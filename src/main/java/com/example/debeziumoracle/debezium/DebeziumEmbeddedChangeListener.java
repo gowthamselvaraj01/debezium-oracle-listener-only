@@ -25,6 +25,7 @@ import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class DebeziumEmbeddedChangeListener {
@@ -36,7 +37,9 @@ public class DebeziumEmbeddedChangeListener {
     private final ObjectMapper objectMapper;
 
     private DebeziumEngine<ChangeEvent<String, String>> engine;
-    private ExecutorService executorService;
+    private ExecutorService engineExecutor;
+    private ExecutorService eventProcessorExecutor;
+    private static final int NUM_PROCESSOR_THREADS = 8;
 
     public DebeziumEmbeddedChangeListener(
             DebeziumCaptureProperties properties,
@@ -79,9 +82,22 @@ public class DebeziumEmbeddedChangeListener {
                 .notifying(this::handleChangeEvent)
                 .build();
 
-        executorService = Executors.newSingleThreadExecutor();
-        executorService.submit(engine);
-        log.info("Debezium embedded engine started for {}", properties.getTableIncludeList());
+        engineExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "debezium-engine");
+            t.setDaemon(false);
+            return t;
+        });
+        
+        AtomicInteger threadCounter = new AtomicInteger(1);
+        eventProcessorExecutor = Executors.newFixedThreadPool(NUM_PROCESSOR_THREADS, r -> {
+            Thread t = new Thread(r, "event-processor-" + threadCounter.getAndIncrement());
+            t.setDaemon(false);
+            return t;
+        });
+        
+        engineExecutor.submit(engine);
+        log.info("Debezium embedded engine started for {} with {} async processors", 
+                 properties.getTableIncludeList(), NUM_PROCESSOR_THREADS);
     }
 
     private void handleChangeEvent(ChangeEvent<String, String> event) {
@@ -108,9 +124,17 @@ public class DebeziumEmbeddedChangeListener {
                     after,
                     Instant.now()
             );
-            processor.processWithRetry(rowChange);
+            
+            // Submit to thread pool for async processing
+            eventProcessorExecutor.submit(() -> {
+                try {
+                    processor.processWithRetry(rowChange);
+                } catch (Exception ex) {
+                    log.error("Failed to process Debezium event for row: {}", event.key(), ex);
+                }
+            });
         } catch (Exception ex) {
-            log.error("Failed to process Debezium event", ex);
+            log.error("Failed to parse Debezium event", ex);
         }
     }
 
@@ -142,9 +166,13 @@ public class DebeziumEmbeddedChangeListener {
         if (engine != null) {
             engine.close();
         }
-        if (executorService != null) {
-            executorService.shutdown();
-            executorService.awaitTermination(5, TimeUnit.SECONDS);
+        if (engineExecutor != null) {
+            engineExecutor.shutdown();
+            engineExecutor.awaitTermination(5, TimeUnit.SECONDS);
+        }
+        if (eventProcessorExecutor != null) {
+            eventProcessorExecutor.shutdown();
+            eventProcessorExecutor.awaitTermination(10, TimeUnit.SECONDS);
         }
     }
 }
