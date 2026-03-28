@@ -47,8 +47,12 @@ public class DlqController {
     @PostMapping("/{id}/replay")
     public ResponseEntity<Map<String, String>> replayOne(@PathVariable String id) {
         try {
-            retryableProcessor.replayFromDlq(id);
-            return ResponseEntity.ok(Map.of("status", "replayed", "id", id));
+            boolean success = retryableProcessor.replayFromDlq(id);
+            if (success) {
+                return ResponseEntity.ok(Map.of("status", "replayed", "id", id));
+            }
+            return ResponseEntity.ok(Map.of("status", "failed", "id", id,
+                    "message", "Replay failed, event kept in DLQ"));
         } catch (IllegalArgumentException ex) {
             return ResponseEntity.notFound().build();
         }
