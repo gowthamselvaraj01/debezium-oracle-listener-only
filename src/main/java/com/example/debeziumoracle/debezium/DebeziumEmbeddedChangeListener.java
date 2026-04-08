@@ -105,7 +105,9 @@ public class DebeziumEmbeddedChangeListener {
             if (event.value() == null) {
                 return;
             }
-
+            System.out.println("Received Debezium event: " + event);
+            System.out.println("Received Debezium event key: " + event.key());
+            System.out.println("Received Debezium event value: " + event.value());
             JsonNode root = objectMapper.readTree(event.value());
             JsonNode payload = root.path("payload");
             String operation = payload.path("op").asText();
